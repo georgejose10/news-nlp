@@ -4,6 +4,8 @@ from typing import Dict
 from transformers import AutoTokenizer, AutoModelForSequenceClassification, TextClassificationPipeline
 import torch
 
+import re
+from transformers import pipeline 
 
 app = FastAPI(title="Newslens")
 
@@ -23,6 +25,10 @@ class ChargedWordsResponse(BaseModel):
     count: int
 
 
+
+class BiasResponse(BaseModel):
+    bias: str
+    probabilities: Dict[str,float]
 
 
 # MODEL Setup
@@ -44,24 +50,30 @@ model = AutoModelForSequenceClassification.from_pretrained(MODEL, id2label=id2la
 # 0 = first CUDA GPU if available, else -1 = CPU
 device= 0 if torch.cuda.is_available() else -1
 
-# pipeline object for text classification
+# pipeline object for text classification (sentiment)
 sentiment_clf = TextClassificationPipeline(model=model, tokenizer=tokenizer, device=device,)
+
+# For Bias detection
+bias_clf = pipeline(task="zero-shot-classification", model="facebook/bart-large-mnli", device=device)
+biases = ["left", "right", "neutral"]
+
+# Sentiment 
 
 # Run the pipeline and return a dictionary of probs (assumes one input string)
 def predict_probs(text:str) -> Dict[str,float]:
 
-    outputs = sentiment_clf(text, truncation=True,max_length=512,top_k=None)
+    output_senti = sentiment_clf(text, truncation=True,max_length=512,top_k=None)
 
     probs = {}
 
-    for i in outputs:
-        label = i["label"] # Ex. "POSITIVE"
+    for i in output_senti:
+        label = i["label"] 
         label = label.lower()
 
         score = i["score"]
         score = float(score)
 
-        probs[label] = score
+        probs[label] = round(score,3)
 
     # Ensure all three keys exist
     for k in ("negative", "neutral","positive"):
@@ -69,16 +81,46 @@ def predict_probs(text:str) -> Dict[str,float]:
 
     return probs
 
+# Bias Detection
+
+def bias_probs(text: str) -> Dict[str,float]:
+
+    # Model will return "this text has blank leaning" and will pick the leaning one for said text
+    output_bias = bias_clf(text,candidate_labels=biases, hypothesis_template="This text has a {} political leaning.", multi_label=False)
+    
+    # To built a dict of label score pair
+    scores = {}
+
+    for i in range(len(output_bias["labels"])):
+        label = output_bias["labels"][i]
+        score = float(output_bias['scores'][i])
+        scores[label] = round(score,3)
+
+    # Sort the labels in Biases order
+
+    final_scores = {}
+    for bias in biases:
+        if bias in scores:
+            final_scores[bias] = scores[bias]
+        
+        else:
+            final_scores[bias] = 0.0
+
+    return final_scores
+
 
 # Endpoints
 @app.get("/health")
 def health():
     # Returns JSON to confirm that the server is running
-    return {"ok": True, "device": "cuda" if device == 0 else "cpu", "model": MODEL}
+    return {"ok": True}
 
 
-@app.post("/predict", response_model=SentimentResponse)
+@app.post("/sentiment", response_model=SentimentResponse)
 def predict(userReq: SentimentRequest):
+
+    # Sentiment Analysis
+
     text = userReq.text.strip()
 
     if not text:
@@ -89,11 +131,12 @@ def predict(userReq: SentimentRequest):
     # Choose the winning label and get its confidence 
     sentiment = max(probs,key=probs.get)
     confidence = float(probs[sentiment])
+    
 
     return SentimentResponse(sentiment=sentiment, confidence=confidence, probabilities=probs)
 
 # New Endpoint for detecting charged words
-@app.post("/chargedWords", response_model=ChargedWordsResponse)
+@app.post("/emotive language", response_model=ChargedWordsResponse)
 def find_charged_words(userReq: SentimentRequest):
     charged_words = {"crisis","outrage","disaster","shocking","radical","extremist"}
     words = userReq.text.lower().split()
@@ -105,3 +148,13 @@ def find_charged_words(userReq: SentimentRequest):
             found.append(word)
 
     return ChargedWordsResponse(charged_words_found=found, count=len(found))
+
+@app.post("/bias",response_model=BiasResponse)
+def bias_endpoint(userReq: SentimentRequest):
+    text = userReq.text.strip()
+
+    probs = bias_probs(text)
+    # Finds the key with the largest value
+    label = max(probs, key=probs.get)
+
+    return BiasResponse(bias=label, probabilities=probs)
