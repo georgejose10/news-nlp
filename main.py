@@ -17,6 +17,14 @@ class SentimentResponse(BaseModel):
     confidence: float
     probabilities: Dict[str, float] # Ex. {"positive": 0.9, "negative": 0.1, "neutral": 0.0}
 
+
+class ChargedWordsResponse(BaseModel):
+    charged_words_found: list[str]
+    count: int
+
+
+
+
 # MODEL Setup
 
 MODEL = f"cardiffnlp/twitter-roberta-base-sentiment-latest"
@@ -83,3 +91,17 @@ def predict(userReq: SentimentRequest):
     confidence = float(probs[sentiment])
 
     return SentimentResponse(sentiment=sentiment, confidence=confidence, probabilities=probs)
+
+# New Endpoint for detecting charged words
+@app.post("/chargedWords", response_model=ChargedWordsResponse)
+def find_charged_words(userReq: SentimentRequest):
+    charged_words = {"crisis","outrage","disaster","shocking","radical","extremist"}
+    words = userReq.text.lower().split()
+
+    found = []
+
+    for word in words:
+        if word in charged_words:
+            found.append(word)
+
+    return ChargedWordsResponse(charged_words_found=found, count=len(found))
