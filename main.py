@@ -1,13 +1,14 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from typing import Dict
+from typing import Dict, List
 from transformers import AutoTokenizer, AutoModelForSequenceClassification, TextClassificationPipeline
 import torch
 
 import re
-from transformers import pipeline 
+from transformers import pipeline # For the zero-shot NLI pipeline(facebook/bart-large-mnli)
 
 app = FastAPI(title="Newslens")
+
 
 # What user sends (text only)
 class SentimentRequest(BaseModel):
@@ -21,14 +22,37 @@ class SentimentResponse(BaseModel):
 
 
 class ChargedWordsResponse(BaseModel):
-    charged_words_found: list[str]
+    charged_words_found: List[str]
     count: int
-
-
 
 class BiasResponse(BaseModel):
     bias: str
     probabilities: Dict[str,float]
+
+
+class SentenceResult(BaseModel):
+    text: str
+    sentiment: str
+    sentiment_probs: Dict[str, float]
+    bias: str
+    bias_probabilities: Dict[str, float]
+    charged_words_found: List[str]
+    charged_count: int
+
+
+class AnalyzeRequest(BaseModel):
+    text: str
+
+class AnalyzeResponse(BaseModel):
+    sentiment_overall: Dict[str,float]
+    bias_overall: Dict[str, float]
+    sentiment: str
+    bias: str
+    charged_total: int
+    charged_unique: list[str]
+    sentences: List[SentenceResult] 
+
+
 
 
 # MODEL Setup
@@ -55,7 +79,12 @@ sentiment_clf = TextClassificationPipeline(model=model, tokenizer=tokenizer, dev
 
 # For Bias detection
 bias_clf = pipeline(task="zero-shot-classification", model="facebook/bart-large-mnli", device=device)
-biases = ["left", "right", "neutral"]
+
+biases = [
+    "The sentence expresses a liberal political view",
+    "The sentence expresses a conservative political view",
+    "The sentence is politically neutral (The sentence presents information without a political stance)"
+]
 
 # Sentiment 
 
@@ -82,6 +111,12 @@ def predict_probs(text:str) -> Dict[str,float]:
     return probs
 
 # Bias Detection
+bias_label_map = {
+    "The sentence expresses a liberal political view": "liberal",
+    "The sentence expresses a conservative political view": "conservative",
+    "The sentence is politically neutral (The sentence presents information without a political stance)": "neutral",
+}
+
 
 def bias_probs(text: str) -> Dict[str,float]:
 
@@ -91,22 +126,79 @@ def bias_probs(text: str) -> Dict[str,float]:
     # To built a dict of label score pair
     scores = {}
 
-    for i in range(len(output_bias["labels"])):
-        label = output_bias["labels"][i]
-        score = float(output_bias['scores'][i])
-        scores[label] = round(score,3)
+    # for i in range(len(output_bias["labels"])):
+    #     label = output_bias["labels"][i]
+    #     score = float(output_bias['scores'][i])
+    #     scores[label] = round(score,3)
 
-    # Sort the labels in Biases order
+    for long_label, score in zip(output_bias["labels"], output_bias["scores"]):
+        # Tries to get the value of the long label, if not it falls back to the long label from the loop
+        short_label = bias_label_map.get(long_label,long_label )
+        scores[short_label] = round(score,3)
 
-    final_scores = {}
-    for bias in biases:
-        if bias in scores:
-            final_scores[bias] = scores[bias]
-        
-        else:
-            final_scores[bias] = 0.0
+    return scores
 
-    return final_scores
+# Charged Words Finder
+
+def search_for_charged(text: str) -> tuple[list[str], int]:
+
+    charged_words = {"crisis","outrage","disaster","shocking","radical","extremist"}
+
+    # Convert text to lowercase and split into words
+    words = text.lower().split()
+    
+    # Remove punctuation 
+    words_without_pun = []
+
+    for w in words:
+        cleaned = w.strip(".,!?:;\"'()[]{}")
+        words_without_pun.append(cleaned)
+
+    found = []
+
+    # Add the found words to the list and return them/count
+    for w in words_without_pun:
+        if w in charged_words:
+            found.append(w)
+
+    return found, len(found)
+
+
+
+
+#  For Article Analysis
+
+def sentence_spliter(text:str) -> list:
+
+    # The split function removes any empty spaces and then regex finds a pattern of any .!? followed by a space
+    sentences = re.split(r'(?<=[.!?])\s+',text.strip())
+
+    filtered_sentences = []
+
+    # Skip empty strings
+    for s in sentences:
+        if s:
+            filtered_sentences.append(s)
+
+    return filtered_sentences
+
+
+# Sentence Analysis
+def analyze_sentence(sentence: str) -> SentenceResult:
+
+    sen_probs = predict_probs(sentence)
+    sen_label = max(sen_probs, key=sen_probs.get)
+
+    bias_Probs = bias_probs(sentence)
+    bias_label = max(bias_Probs, key=bias_Probs.get)
+
+    found_words, count = search_for_charged(sentence)
+
+    return SentenceResult(
+        text=sentence, 
+        sentiment=sen_label, sentiment_probs=sen_probs, 
+        bias=bias_label, bias_probabilities=bias_Probs, 
+        charged_words_found=found_words, charged_count=count)
 
 
 # Endpoints
@@ -136,18 +228,12 @@ def predict(userReq: SentimentRequest):
     return SentimentResponse(sentiment=sentiment, confidence=confidence, probabilities=probs)
 
 # New Endpoint for detecting charged words
-@app.post("/emotive language", response_model=ChargedWordsResponse)
+@app.post("/emotive-language", response_model=ChargedWordsResponse)
 def find_charged_words(userReq: SentimentRequest):
-    charged_words = {"crisis","outrage","disaster","shocking","radical","extremist"}
-    words = userReq.text.lower().split()
+    
+    found, count = search_for_charged(userReq.text)
 
-    found = []
-
-    for word in words:
-        if word in charged_words:
-            found.append(word)
-
-    return ChargedWordsResponse(charged_words_found=found, count=len(found))
+    return ChargedWordsResponse(charged_words_found=found, count=count)
 
 @app.post("/bias",response_model=BiasResponse)
 def bias_endpoint(userReq: SentimentRequest):
@@ -158,3 +244,116 @@ def bias_endpoint(userReq: SentimentRequest):
     label = max(probs, key=probs.get)
 
     return BiasResponse(bias=label, probabilities=probs)
+
+
+@app.post("/analyze", response_model=AnalyzeResponse)
+def analyze(userReq: AnalyzeRequest):
+
+    text = userReq.text.strip()
+    # Breaks paragraphs into sentences
+    sents = sentence_spliter(text)
+
+    # rows should be a list of sentence result objects
+    rows: List[SentenceResult] = []
+
+    # Goes through each sentence in sents and analyzes it (see func above) 
+    for s in sents:
+        result = analyze_sentence(s)
+        rows.append(result)
+
+    # Takes per sentence results of rows and combines them into an overall sentiment/bias score for the paragraph
+    if rows:
+        total_len = 0
+        for r in rows:
+            total_len += len(r.text)
+        if total_len == 0:
+            total_len = 1 # avoiding division by 0
+
+        # Grabbing first row so we know what keys exist in each dictionary
+        first_row = rows[0]
+
+        sentiment_keys = list(first_row.sentiment_probs.keys())
+        bias_keys = list(first_row.bias_probabilities.keys())
+
+        # Creating two dictionaries for each key
+        sentiment_acc ={}
+        for key in sentiment_keys:
+            sentiment_acc[key] = 0.0
+
+        bias_acc ={}
+        for key in bias_keys:
+            bias_acc[key] = 0.0
+
+
+        charged_total = 0
+        unique_terms = set()
+
+        for r in rows:
+            weight = len(r.text) / total_len
+
+            for key in sentiment_keys:
+                value = r.sentiment_probs.get(key,0.0)
+                sentiment_acc[key] += value * weight
+
+            for key in bias_keys:
+                value = r.bias_probabilities.get(key, 0.0)
+                bias_acc[key] += value * weight
+
+            charged_total += r.charged_count
+
+            for word in r.charged_words_found:
+                unique_terms.add(word)
+
+
+        top_sentiment = ""
+        # Makes sure the first real value always gets stored
+        top_sentiment_score = -1.0
+
+        for key in sentiment_acc:
+            if sentiment_acc[key] > top_sentiment_score:
+                top_sentiment_score = sentiment_acc[key]
+                top_sentiment = key
+
+        top_bias = ""
+        top_bias_score = -1.0
+
+        for key in bias_acc:
+            if bias_acc[key] > top_bias_score:
+                top_bias_score = bias_acc[key]
+                top_bias = key
+
+
+        sentiment_overal = sentiment_acc
+        bias_overal = bias_acc
+        sentiment_label = top_sentiment
+        bias_label = top_bias
+
+        sentiment_overall_rounded = {}
+        bias_overall_rounded = {}
+
+        for k,v in sentiment_overal.items():
+            sentiment_overall_rounded[k] = round(v,3)
+        
+        for k,v in bias_overal.items():
+            bias_overall_rounded[k] = round(v,3)
+
+    else:
+
+        sentiment_overal = {"negative": 0.0, "neutral": 0.0, "positive": 0.0}
+        bias_overal = {}
+        sentiment_label = ""
+        bias_label = ""
+        charged_total = 0
+        unique_terms = set()
+
+
+    return AnalyzeResponse(
+        sentiment_overall= sentiment_overall_rounded,
+        bias_overall=bias_overall_rounded,
+        sentiment=sentiment_label,
+        bias=bias_label,
+        charged_total=charged_total,
+        charged_unique=sorted(unique_terms),
+        sentences=rows,
+    )
+
