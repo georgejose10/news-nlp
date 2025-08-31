@@ -7,6 +7,11 @@ import torch
 import re
 from transformers import pipeline # For the zero-shot NLI pipeline(facebook/bart-large-mnli)
 
+import requests
+from bs4 import BeautifulSoup
+
+from fastapi import Body
+
 app = FastAPI(title="Newslens")
 
 
@@ -51,6 +56,9 @@ class AnalyzeResponse(BaseModel):
     charged_total: int
     charged_unique: list[str]
     sentences: List[SentenceResult] 
+
+class AnalyzeUrlRequest(BaseModel):
+    url: str
 
 
 
@@ -200,56 +208,11 @@ def analyze_sentence(sentence: str) -> SentenceResult:
         bias=bias_label, bias_probabilities=bias_Probs, 
         charged_words_found=found_words, charged_count=count)
 
+def analyze_text(userReq:str) -> AnalyzeResponse:
 
-# Endpoints
-@app.get("/health")
-def health():
-    # Returns JSON to confirm that the server is running
-    return {"ok": True}
+    # text = userReq.text.strip()
 
-
-@app.post("/sentiment", response_model=SentimentResponse)
-def predict(userReq: SentimentRequest):
-
-    # Sentiment Analysis
-
-    text = userReq.text.strip()
-
-    if not text:
-        raise HTTPException(400,'text is empty')
-
-    probs = predict_probs(text)
-
-    # Choose the winning label and get its confidence 
-    sentiment = max(probs,key=probs.get)
-    confidence = float(probs[sentiment])
-    
-
-    return SentimentResponse(sentiment=sentiment, confidence=confidence, probabilities=probs)
-
-# New Endpoint for detecting charged words
-@app.post("/emotive-language", response_model=ChargedWordsResponse)
-def find_charged_words(userReq: SentimentRequest):
-    
-    found, count = search_for_charged(userReq.text)
-
-    return ChargedWordsResponse(charged_words_found=found, count=count)
-
-@app.post("/bias",response_model=BiasResponse)
-def bias_endpoint(userReq: SentimentRequest):
-    text = userReq.text.strip()
-
-    probs = bias_probs(text)
-    # Finds the key with the largest value
-    label = max(probs, key=probs.get)
-
-    return BiasResponse(bias=label, probabilities=probs)
-
-
-@app.post("/analyze", response_model=AnalyzeResponse)
-def analyze(userReq: AnalyzeRequest):
-
-    text = userReq.text.strip()
+    text = userReq.strip()
     # Breaks paragraphs into sentences
     sents = sentence_spliter(text)
 
@@ -357,3 +320,99 @@ def analyze(userReq: AnalyzeRequest):
         sentences=rows,
     )
 
+def extract_text_from_url(url:str) -> str:
+
+    headers = {"User-Agent": "Newslens/1.0 (+https://example.com/)"}
+    r = requests.get(url, headers=headers, timeout=15)
+    r.raise_for_status()
+    html = r.text
+
+    try:
+        from readability import Document
+        doc = Document(html)
+        content_html = doc.summary()
+        soup = BeautifulSoup(content_html, "html.parser")
+
+        text_parts = []
+        for p in soup.find_all(["p", "li"]):
+            text_parts.append(p.get_text(separator=" ", strip=True))
+
+        text = " ".join(text_parts)
+
+    except Exception:
+        soup = BeautifulSoup(html, "html.parser")
+        for tag in soup(["script", "style", "noscript","footer", "header","nav", "form","aside"]):
+            tag.decompose()
+
+        text_parts = []
+        for p in soup.findAll("p"):
+            text_parts.append(p.get_text(separator=" ", strip=True))
+
+        text= " ".join(text_parts)
+
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+# print(extract_text_from_url("https://www.cbc.ca/news/politics/finland-sweden-canada-defence-lessons-1.7621502"))
+
+# Endpoints
+@app.get("/health")
+def health():
+    # Returns JSON to confirm that the server is running
+    return {"ok": True}
+
+
+@app.post("/sentiment", response_model=SentimentResponse)
+def predict(userReq: SentimentRequest):
+
+    # Sentiment Analysis
+
+    text = userReq.text.strip()
+
+    if not text:
+        raise HTTPException(400,'text is empty')
+
+    probs = predict_probs(text)
+
+    # Choose the winning label and get its confidence 
+    sentiment = max(probs,key=probs.get)
+    confidence = float(probs[sentiment])
+    
+
+    return SentimentResponse(sentiment=sentiment, confidence=confidence, probabilities=probs)
+
+# New Endpoint for detecting charged words
+@app.post("/emotive-language", response_model=ChargedWordsResponse)
+def find_charged_words(userReq: SentimentRequest):
+    
+    found, count = search_for_charged(userReq.text)
+
+    return ChargedWordsResponse(charged_words_found=found, count=count)
+
+@app.post("/bias",response_model=BiasResponse)
+def bias_endpoint(userReq: SentimentRequest):
+    text = userReq.text.strip()
+
+    probs = bias_probs(text)
+    # Finds the key with the largest value
+    label = max(probs, key=probs.get)
+
+    return BiasResponse(bias=label, probabilities=probs)
+
+
+@app.post("/analyze-raw-text", response_model=AnalyzeResponse)
+def analyze_raw(body: str = Body(..., media_type="text/plain")):
+    return analyze_text(body)
+
+@app.post("/anaylze_url", response_model=AnalyzeResponse)
+def analyze_url(req: AnalyzeUrlRequest):
+    try:
+        article_text = extract_text_from_url(req.url)
+    
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to fetch/extract: {e}")
+    
+    if not article_text:
+        raise HTTPException(status_code=400, detail=f"No article text extracted")
+    
+    return analyze_text(article_text)
