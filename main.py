@@ -57,6 +57,10 @@ class AnalyzeResponse(BaseModel):
     charged_unique: list[str]
     sentences: List[SentenceResult] 
 
+    top_positive: List[dict]
+    top_negative: List[dict]
+    top_biased: List[dict]
+
 class AnalyzeUrlRequest(BaseModel):
     url: str
 
@@ -224,6 +228,12 @@ def analyze_text(userReq:str) -> AnalyzeResponse:
         result = analyze_sentence(s)
         rows.append(result)
 
+
+    # Grab the top 3 neg/pos and biased sentences
+    pos_list = []
+    neg_list = []
+    biased_list = []
+
     # Takes per sentence results of rows and combines them into an overall sentiment/bias score for the paragraph
     if rows:
         total_len = 0
@@ -285,6 +295,23 @@ def analyze_text(userReq:str) -> AnalyzeResponse:
                 top_bias_score = bias_acc[key]
                 top_bias = key
 
+        # Grabs pos/neg sentiment probablitity from dict
+        for r in rows:
+            pos_score = float(r.sentiment_probs.get("positive", 0.0))
+            neg_score = float(r.sentiment_probs.get("negative", 0.0))
+            pos_list.append({"text": r.text, "score": round(pos_score,3)})
+            neg_list.append({"text": r.text, "score": round(neg_score,3)})
+
+
+            lib_score = float(r.bias_probabilities.get("liberal", 0.0))
+            cons_score = float(r.bias_probabilities.get("conservative", 0.0))
+
+            if lib_score > cons_score:
+               biased_list.append({"text": r.text, "side": "liberal", "score": round(lib_score, 3)})
+            else:
+                 biased_list.append({"text": r.text, "side": "conservative", "score": round(cons_score, 3)})
+
+
 
         sentiment_overal = sentiment_acc
         bias_overal = bias_acc
@@ -309,6 +336,13 @@ def analyze_text(userReq:str) -> AnalyzeResponse:
         charged_total = 0
         unique_terms = set()
 
+    pos_list.sort(key=get_score, reverse=True)
+    neg_list.sort(key=get_score, reverse=True)
+    biased_list.sort(key=get_score, reverse=True)
+
+    top_positive = pos_list[:3]
+    top_negative = neg_list[:3]
+    top_biased = biased_list[:3]
 
     return AnalyzeResponse(
         sentiment_overall= sentiment_overall_rounded,
@@ -318,7 +352,15 @@ def analyze_text(userReq:str) -> AnalyzeResponse:
         charged_total=charged_total,
         charged_unique=sorted(unique_terms),
         sentences=rows,
+
+        top_positive=top_positive,
+        top_negative= top_negative,
+        top_biased=top_biased,
+
     )
+
+def get_score(item):
+    return item["score"]
 
 def extract_text_from_url(url:str) -> str:
 
