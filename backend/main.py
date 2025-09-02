@@ -12,8 +12,20 @@ from bs4 import BeautifulSoup
 
 from fastapi import Body
 
+from fastapi.middleware.cors import CORSMiddleware
+
 app = FastAPI(title="Newslens")
 
+
+app.add_middleware(
+    CORSMiddleware,allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # What user sends (text only)
 class SentimentRequest(BaseModel):
@@ -442,11 +454,11 @@ def bias_endpoint(userReq: SentimentRequest):
     return BiasResponse(bias=label, probabilities=probs)
 
 
-@app.post("/analyze-raw-text", response_model=AnalyzeResponse)
-def analyze_raw(body: str = Body(..., media_type="text/plain")):
-    return analyze_text(body)
+@app.post("/analyze-text", response_model=AnalyzeResponse)
+def analyze_raw(userReq: AnalyzeRequest):
+    return analyze_text(userReq.text)
 
-@app.post("/anaylze_url", response_model=AnalyzeResponse)
+@app.post("/analyze-url", response_model=AnalyzeResponse)
 def analyze_url(req: AnalyzeUrlRequest):
     try:
         article_text = extract_text_from_url(req.url)
