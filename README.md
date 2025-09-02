@@ -97,4 +97,14 @@ npm run dev
 
 ---
 
+## Demo Images
+
+### Home Page
+![Homepage](demo-images/frontend-demo.png)
+### Analysis Result 1
+![Result 1](demo-images/frontpage-demo-1.png)
+### Analysis Result 2
+![Result 2](demo-images/frontpage-demo-2.png)
+### Backend API
+![Backend Result](demo-images/api-json-response.png)
 
