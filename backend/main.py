@@ -166,7 +166,16 @@ def bias_probs(text: str) -> Dict[str,float]:
 
 def search_for_charged(text: str) -> tuple[list[str], int]:
 
-    charged_words = {"crisis","outrage","disaster","shocking","radical","extremist"}
+    charged_words = {
+    "crisis", "outrage", "disaster", "shocking", "radical", "extremist",
+    "corrupt", "agenda", "scandal", "traitor", "authoritarian", "collapse",
+    "fraud", "incompetent", "cover-up", "threat", "violated",
+    "unconstitutional",  "mob", "rigged", "tyranny", "indoctrinate",
+    "insurrection", "puppet", "regime", "fear-mongering", "chaos", "hate", "divisive",
+    "weaponized", "hijacked", "illegal", "dominate", "forced", "manipulate"
+}
+
+
 
     # Convert text to lowercase and split into words
     words = text.lower().split()
